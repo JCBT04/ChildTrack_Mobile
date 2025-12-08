@@ -4,11 +4,11 @@
     "slug": "snack-c5b80c95-890b-4f8f-a895-0b0a31a3c336",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/iconf.png",
+    "icon": "./assets/ficon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/iconf.png",
+      "image": "./assets/ficon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -17,14 +17,14 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/iconf.png",
+        "foregroundImage": "./assets/ficon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.jhunel02.snackc5b80c95890b4f8fa8950b0a31a3c336"
     },
     "web": {
-      "favicon": "./assets/iconf.png"
+      "favicon": "./assets/ficon.png"
     },
     "extra": {
       "eas": {

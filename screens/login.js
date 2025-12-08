@@ -70,8 +70,13 @@ const Login = ({ navigation }) => {
         // Persist parent object (used for offline/public flows)
         await AsyncStorage.setItem("parent", JSON.stringify(pjson.parent));
 
-        // Always remember username to prefill later (more user-friendly)
-        await AsyncStorage.setItem("username", trimmedUsername);
+        // Store username only if user opted to remember credentials
+        if (rememberMe) {
+          await AsyncStorage.setItem("username", trimmedUsername);
+        } else {
+          // If user did not opt to remember, remove any previously saved username
+          try { await AsyncStorage.removeItem('username'); } catch (e) {}
+        }
 
         // If user chose Remember me, also store password and token (if present)
         if (rememberMe) {
@@ -108,7 +113,7 @@ const Login = ({ navigation }) => {
 
       try {
         setParentsLoading(true);
-        const parents = await fetchParents(json && json.token);
+        const parents = await fetchParents(pjson && pjson.token);
         setParentsData(parents);
       } catch (e) {
         console.warn("[Login] fetchParents failed", e);
@@ -154,24 +159,62 @@ const Login = ({ navigation }) => {
     const loadSaved = async () => {
       try {
         const rem = await AsyncStorage.getItem("remember_me");
-        if (rem === "1") setRememberMe(true);
         const savedUsername = await AsyncStorage.getItem("username");
-        if (savedUsername) setUsername(savedUsername);
         const savedPassword = await AsyncStorage.getItem("password");
-        if (savedPassword) setPassword(savedPassword);
-
-        // If a token exists in storage, assume user chose to stay signed in
         const token = await AsyncStorage.getItem("token");
-        if (token) {
-          // replace to avoid back navigation
-          navigation.replace("home");
+
+        // Only enable auto-login (navigation) when remember_me was explicitly enabled.
+        if (rem === "1") {
+          setRememberMe(true);
+          if (savedPassword) setPassword(savedPassword);
+          if (token) {
+            // replace to avoid back navigation
+            navigation.replace("home");
+            return; // prevent further UI updates
+          }
+        } else {
+          // If not remembered, remove stray saved password and username
+          if (savedPassword) {
+            try { await AsyncStorage.removeItem('password'); } catch (e) {}
+          }
+          if (savedUsername) {
+            try { await AsyncStorage.removeItem('username'); } catch (e) {}
+          }
         }
+
+        // If a username is still present in storage (remember_me was enabled previously), prefill it
+        if (savedUsername) setUsername(savedUsername);
       } catch (e) {
         console.warn("[Login] loadSaved error", e);
       }
     };
     loadSaved();
   }, []);
+
+  // Toggle remember-me state and update persistent storage immediately.
+  const toggleRememberMe = async (value) => {
+    try {
+      const newVal = (typeof value === 'boolean') ? value : !rememberMe;
+      setRememberMe(newVal);
+      if (newVal) {
+        await AsyncStorage.setItem('remember_me', '1');
+        // do not store password here; password will be saved on successful login
+      } else {
+        // clear stored sensitive credentials immediately when user unchecks
+        try {
+          await AsyncStorage.removeItem('password');
+        } catch (e) {}
+        try {
+          await AsyncStorage.removeItem('remember_me');
+        } catch (e) {}
+        try {
+          await AsyncStorage.removeItem('token');
+        } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('[Login] toggleRememberMe error', e);
+    }
+  };
 
   return (
     <LinearGradient
@@ -220,7 +263,8 @@ const Login = ({ navigation }) => {
                   style={[styles.input, { color: isDark ? "#fff" : "#000" }]}
                   value={username}
                   onChangeText={setUsername}
-                  autoCapitalize="none"
+                  autoCapitalize="sentences"
+                  autoCorrect={false}
                   returnKeyType="next"
                   onSubmitEditing={() => passwordRef.current && passwordRef.current.focus()}
                 />
@@ -242,6 +286,8 @@ const Login = ({ navigation }) => {
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={secureText}
+                  autoCapitalize="sentences"
+                  autoCorrect={false}
                   returnKeyType="done"
                   onSubmitEditing={handleLogin}
                 />
