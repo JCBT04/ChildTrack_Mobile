@@ -8,20 +8,19 @@ import {
   Image,
   Linking,
   RefreshControl,
+  Modal,
+  Platform,
 } from 'react-native';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient'; // ✅ Added gradient
+import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../components/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useIsFocused } from '@react-navigation/native';
 
-// const DEFAULT_RENDER_BACKEND_URL = "https://capstone-foal.onrender.com";
 const DEFAULT_RENDER_BACKEND_URL = "https://childtrack-backend.onrender.com/";
-
 const BACKEND_URL = DEFAULT_RENDER_BACKEND_URL.replace(/\/$/, "");
 const ALL_TEACHERS_ENDPOINT = `${BACKEND_URL}/api/parents/all-teachers-students/`;
 
-// Import your logo
 import logo from '../assets/lg.png';
 
 const Home = ({ navigation }) => {
@@ -31,34 +30,84 @@ const Home = ({ navigation }) => {
   const [childNames, setChildNames] = useState([]);
   const [loadingChild, setLoadingChild] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [contactModalVisible, setContactModalVisible] = useState(false);
+  const [selectedPhoneNumber, setSelectedPhoneNumber] = useState('');
 
-    const dashboardItems = [
-      { title: 'Events', icon: 'calendar', color: '#2980b9', screen: 'event' },
-      {
-        title: 'Attendance',
-        icon: 'people',
-        color: '#27ae60',
-        screen: 'attendance',
-      },
-      {
-        title: 'Student Schedule',
-        icon: 'time-outline',
-        color: '#8e44ad',
-        screen: 'schedule',
-      },
-      {
-        title: 'Unregistered',
-        icon: 'close-circle',
-        color: '#e74c3c',
-        screen: 'unregistered',
-      },
-      {
-        title: 'Authorized List',
-        icon: 'checkmark-done-circle',
-        color: '#16a085',
-        screen: 'authorized',
-      },
-    ];
+  const dashboardItems = [
+    { title: 'Events', icon: 'calendar', color: '#2980b9', screen: 'event' },
+    {
+      title: 'Attendance',
+      icon: 'people',
+      color: '#27ae60',
+      screen: 'attendance',
+    },
+    {
+      title: 'Student Schedule',
+      icon: 'time-outline',
+      color: '#8e44ad',
+      screen: 'schedule',
+    },
+    {
+      title: 'Unregistered',
+      icon: 'close-circle',
+      color: '#e74c3c',
+      screen: 'unregistered',
+    },
+    {
+      title: 'Authorized List',
+      icon: 'checkmark-done-circle',
+      color: '#16a085',
+      screen: 'authorized',
+    },
+  ];
+
+  // Helper function to get status color and label - LIMITED TO 4 OPTIONS
+  const getStatusInfo = (status) => {
+    const normalizedStatus = (status || 'absent').toLowerCase().trim().replace(/[\s_-]/g, '');
+    
+    switch (normalizedStatus) {
+      case 'present':
+      case 'pickup': // Pick-up also represents Present
+      case 'dropoff': // Drop-off also represents Present
+        return { color: '#2ecc71', label: 'Present' };
+      case 'absent':
+        return { color: '#e74c3c', label: 'Absent' };
+      case 'late':
+        return { color: '#f39c12', label: 'Late' };
+      case 'droppedout':
+      case 'dropout':
+        return { color: '#95a5a6', label: 'Dropped Out' };
+      default:
+        // Any other status defaults to Absent
+        return { color: '#e74c3c', label: 'Absent' };
+    }
+  };
+
+  // Function to handle phone number press - shows custom modal
+  const handlePhonePress = (phoneNumber) => {
+    setSelectedPhoneNumber(phoneNumber);
+    setContactModalVisible(true);
+  };
+
+  const handleCall = () => {
+    setContactModalVisible(false);
+    setTimeout(() => {
+      const telUrl = `tel:${selectedPhoneNumber}`;
+      Linking.openURL(telUrl).catch((err) => {
+        console.error('Error opening phone:', err);
+      });
+    }, 300);
+  };
+
+  const handleMessage = () => {
+    setContactModalVisible(false);
+    setTimeout(() => {
+      const smsUrl = `sms:${selectedPhoneNumber}`;
+      Linking.openURL(smsUrl).catch((err) => {
+        console.error('Error opening messages:', err);
+      });
+    }, 300);
+  };
 
   const loadChild = async ({ skipLoading = false } = {}) => {
     if (!skipLoading) setLoadingChild(true);
@@ -96,7 +145,6 @@ const Home = ({ navigation }) => {
         return aggregated;
       };
 
-      // Try to get stored parent data as fallback
       let fallbackParentData = null;
       try {
         const storedParent = await AsyncStorage.getItem('parent');
@@ -113,7 +161,6 @@ const Home = ({ navigation }) => {
         headers['Authorization'] = `Token ${token}`;
       }
 
-      // Fetch all parent records from API (parent might have multiple children)
       let fetchedParentRecords = [];
       try {
         const parentsResp = await fetch(`${BACKEND_URL}/api/parents/parents/`, { headers });
@@ -138,7 +185,6 @@ const Home = ({ navigation }) => {
             console.warn('Failed to fetch parents from fallback endpoint', fallbackErr);
           }
         }
-        // If everything else fails, use stored parent data as fallback
         if (!fetchedParentRecords.length && fallbackParentData) {
           fetchedParentRecords = [fallbackParentData];
         }
@@ -148,21 +194,18 @@ const Home = ({ navigation }) => {
         ? fetchedParentRecords.filter(p => p.username === username)
         : fetchedParentRecords;
 
-      // If no parents found, return empty
       if (parentsList.length === 0) {
         setChildNames([]);
         setLoadingChild(false);
         return;
       }
 
-      // Persist the primary parent record so other screens (Events) can read student/section
       try {
         await AsyncStorage.setItem('parent', JSON.stringify(parentsList[0]));
       } catch (e) {
         console.warn('Failed to cache primary parent record', e);
       }
 
-      // Build a lookup of guardians per student for quick filtering on the Home screen
       const guardiansByStudent = fetchedParentRecords.reduce((acc, record) => {
         if (!record || typeof record !== 'object') return acc;
         const key = (record.student_name || '').trim().toLowerCase();
@@ -173,7 +216,6 @@ const Home = ({ navigation }) => {
         return acc;
       }, {});
 
-      // Build child data from parent records associated with this username (each parent record = one student)
       const kids = parentsList
         .filter(p => p.student_name)
         .map(p => ({
@@ -217,42 +259,59 @@ const Home = ({ navigation }) => {
 
       try {
         const today = new Date();
-        const todayStr = today.toISOString().slice(0,10);
-        const day = today.getDay();
-        const isWeekend = (day === 0 || day === 6);
+        const year = today.getFullYear();
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const date = String(today.getDate()).padStart(2, '0');
+        const todayStr = `${year}-${month}-${date}`;
+        console.log(`[Home] Today's local date: ${todayStr}`);
 
-        if (isWeekend) {
-          const kidsWithStatus = kids.map(k => ({ ...k, attendanceStatus: 'weekend', attendanceStatusLabel: 'No Class' }));
-          setChildNames(kidsWithStatus);
-          setLoadingChild(false);
-        } else {
-          let attendanceData = [];
-          try {
-            attendanceData = await fetchPublicAttendance();
-          } catch (err) {
-            console.warn('Failed fetching public attendance list', err);
-            attendanceData = [];
-          }
-
-          const kidsWithStatus = await Promise.all(kids.map(async (kid) => {
-            try {
-              const todayAttendance = attendanceData.find(
-                (record) => record.date === todayStr && matchesKidRecord(record, kid)
-              );
-              if (todayAttendance) {
-                const rawStatus = (todayAttendance.status || 'Present').trim();
-                const normalizedStatus = rawStatus.toLowerCase();
-                return { ...kid, attendanceStatus: normalizedStatus, attendanceStatusLabel: rawStatus };
-              }
-              return { ...kid, attendanceStatus: 'absent', attendanceStatusLabel: 'Absent' };
-            } catch (e) {
-              console.warn('Failed fetching attendance for', kid.name, e);
-              return { ...kid, attendanceStatus: 'absent', attendanceStatusLabel: 'Absent' };
-            }
-          }));
-          setChildNames(kidsWithStatus);
-          setLoadingChild(false);
+        let attendanceData = [];
+        try {
+          attendanceData = await fetchPublicAttendance();
+        } catch (err) {
+          console.warn('Failed fetching public attendance list', err);
+          attendanceData = [];
         }
+
+        const kidsWithStatus = await Promise.all(kids.map(async (kid) => {
+          try {
+            console.log(`[Home] Looking for attendance for: ${kid.name} (LRN: ${kid.lrn})`);
+            console.log(`[Home] Today's date: ${todayStr}`);
+            console.log(`[Home] Total attendance records: ${attendanceData.length}`);
+            
+            const todayRecords = attendanceData.filter(r => r.date === todayStr);
+            console.log(`[Home] Records for today (${todayStr}):`, todayRecords.map(r => ({
+              name: r.student_name,
+              lrn: r.student_lrn,
+              status: r.status,
+              date: r.date
+            })));
+
+            const todayAttendance = attendanceData.find(
+              (record) => record.date === todayStr && matchesKidRecord(record, kid)
+            );
+            
+            if (todayAttendance) {
+              const rawStatus = (todayAttendance.status || 'Absent').trim();
+              console.log(`[Home] Found attendance for ${kid.name}: status="${rawStatus}"`);
+              const normalizedStatus = rawStatus.toLowerCase().trim().replace(/[\s_-]/g, '');
+              console.log(`[Home] Normalized status: "${normalizedStatus}"`);
+              
+              // Only allow the 4 valid statuses (pickup and dropoff count as present)
+              const validStatuses = ['present', 'absent', 'late', 'droppedout', 'dropout', 'pickup', 'dropoff'];
+              const finalStatus = validStatuses.includes(normalizedStatus) ? normalizedStatus : 'absent';
+              
+              return { ...kid, attendanceStatus: finalStatus, attendanceStatusLabel: rawStatus };
+            }
+            console.log(`[Home] No attendance found for ${kid.name}, defaulting to absent`);
+            return { ...kid, attendanceStatus: 'absent', attendanceStatusLabel: 'Absent' };
+          } catch (e) {
+            console.warn('Failed fetching attendance for', kid.name, e);
+            return { ...kid, attendanceStatus: 'absent', attendanceStatusLabel: 'Absent' };
+          }
+        }));
+        setChildNames(kidsWithStatus);
+        setLoadingChild(false);
       } catch (e) {
         console.warn('Failed to fetch attendance statuses', e);
         const absentKids = kids.map(k => ({ ...k, attendanceStatus: 'absent', attendanceStatusLabel: 'Absent' }));
@@ -283,88 +342,68 @@ const Home = ({ navigation }) => {
       colors={isDark ? ['#0b0f19', '#1a1f2b'] : ['#f5f5f5', '#e0e0e0']}
       style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-        {/* Header */}
         <View
           style={[
             styles.header,
-            { backgroundColor: isDark ? '#1a1a1a' : '#3498db' }, // Match login dark card
+            { backgroundColor: isDark ? '#1a1a1a' : '#3498db' },
           ]}>
-          {/* Logo + Profile Icon */}
-          {/* <View style={styles.topRow}>
-            <Image source={logo} style={styles.logo} resizeMode="contain" />
-            <Ionicons name="person-circle-outline" size={40} color="#fff" />
-          </View> */}
-
-          {/* Welcome */}
           <Text style={[styles.welcome, { color: '#fff' }]}>
             👋 Welcome back, Parent!
           </Text>
 
-          {/* Child Info */}
-            <View style={styles.childInfo}>
-              <View>
-                <Text style={[styles.label, { color: '#fff' }]}>Your Child</Text>
-                {loadingChild ? (
-                  <Text style={[styles.childName, { color: '#fff' }]}>Loading…</Text>
-                ) : !childNames.length ? (
-                  <Text style={[styles.childName, { color: '#fff' }]}>No child found</Text>
-                        ) : (
-                          childNames.map((c, i) => (
-                            <View key={i} style={{ marginBottom: 6 }}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                                <Text style={[styles.childName, { color: '#fff' }]}>{c.name}</Text>
-                                <View style={[
-                                  styles.statusContainer,{marginLeft: 20},
-                                  c.attendanceStatus === 'present' ? { backgroundColor: '#2ecc71' } :
-                                  c.attendanceStatus === 'absent' ? { backgroundColor: '#e74c3c' } :
-                                  c.attendanceStatus === 'weekend' ? { backgroundColor: '#3498db' } :
-                                  { backgroundColor: '#95a5a6' }
-                                ]}>
-                                  <Text style={styles.statusText}>
-                                    {c.attendanceStatusLabel ||
-                                      (c.attendanceStatus === 'present' ? 'Present' :
-                                        c.attendanceStatus === 'absent' ? 'Absent' :
-                                        c.attendanceStatus === 'weekend' ? 'No Class' :
-                                        'No record')}
-                                  </Text>
-                                </View>
-                              </View>
-                              {c.section ? (
-                                <Text style={[styles.sectionText, { color: '#fff', marginTop: 4 }]}>Section: {c.section}</Text>
-                              ) : null}
-                              <View style={styles.teacherRow}>
-                                <Text style={[styles.teacherName, { color: '#fff' }]}>
-                                  {c.teacherName ? `Teacher: ${c.teacherName}` : 'Teacher: Not provided'}
-                                </Text>
-                                {c.teacherPhone ? (
-                                  <TouchableOpacity
-                                    onPress={() => {
-                                      const tel = `tel:${c.teacherPhone}`;
-                                      Linking.canOpenURL(tel).then(supported => {
-                                        if (supported) Linking.openURL(tel);
-                                      }).catch(() => {});
-                                    }}
-                                    style={styles.phoneButton}
-                                  >
-                                    <Ionicons name="call" size={14} color="#fff" />
-                                    <Text style={[styles.teacherPhone, { color: '#fff' }]}> {c.teacherPhone}</Text>
-                                  </TouchableOpacity>
-                                ) : null}
-                              </View>
-                              {c.guardians && c.guardians.length > 0 ? (
-                                <Text style={[styles.guardianInfo, { color: '#fff' }]}>
-                                  Guardian{c.guardians.length > 1 ? 's' : ''}: {c.guardians.map(g => g.name).join(', ')}
-                                </Text>
-                              ) : null}
-                            </View>
-                          ))
-                        )}
-              </View>
-            
+          <View style={styles.childInfo}>
+            <View>
+              <Text style={[styles.label, { color: '#fff' }]}>Your Child</Text>
+              {loadingChild ? (
+                <Text style={[styles.childName, { color: '#fff' }]}>Loading…</Text>
+              ) : !childNames.length ? (
+                <Text style={[styles.childName, { color: '#fff' }]}>No child found</Text>
+              ) : (
+                childNames.map((c, i) => {
+                  const statusInfo = getStatusInfo(c.attendanceStatus);
+                  return (
+                    <View key={i} style={{ marginBottom: 6 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Text style={[styles.childName, { color: '#fff' }]}>{c.name}</Text>
+                        <View style={[
+                          styles.statusContainer,
+                          { marginLeft: 20, backgroundColor: statusInfo.color }
+                        ]}>
+                          <Text style={styles.statusText}>
+                            {statusInfo.label}
+                          </Text>
+                        </View>
+                      </View>
+                      {c.section ? (
+                        <Text style={[styles.sectionText, { color: '#fff', marginTop: 4 }]}>Section: {c.section}</Text>
+                      ) : null}
+                      <View style={styles.teacherRow}>
+                        <Text style={[styles.teacherName, { color: '#fff' }]}>
+                          {c.teacherName ? `Teacher: ${c.teacherName}` : 'Teacher: Not provided'}
+                        </Text>
+                        {c.teacherPhone ? (
+                          <TouchableOpacity
+                            onPress={() => handlePhonePress(c.teacherPhone)}
+                            style={styles.phoneButton}
+                          >
+                            <Ionicons name="call" size={14} color="#fff" />
+                            <Text style={[styles.teacherPhone, { color: '#fff' }]}> {c.teacherPhone}</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                      {c.guardians && c.guardians.length > 0 ? (
+                        <Text style={[styles.guardianInfo, { color: '#fff' }]}>
+                          Guardian{c.guardians.length > 1 ? 's' : ''}: {c.guardians.map(g => g.name).join(', ')}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
             </View>
+          </View>
         </View>
 
-        {/* Dashboard Title */}
         <View style={styles.dashboardHeader}>
           <MaterialIcons
             name="dashboard"
@@ -379,7 +418,6 @@ const Home = ({ navigation }) => {
             Dashboard
           </Text>
           <View style={{ flexDirection: 'row', marginLeft: 'auto' }}>
-            {/* Notifications */}
             <TouchableOpacity
               onPress={() => navigation.navigate('notification')}>
               <Ionicons
@@ -389,7 +427,6 @@ const Home = ({ navigation }) => {
                 style={{ marginRight: 15 }}
               />
             </TouchableOpacity>
-            {/* Settings */}
             <TouchableOpacity onPress={() => navigation.navigate('setting')}>
               <Ionicons
                 name="settings-outline"
@@ -400,7 +437,6 @@ const Home = ({ navigation }) => {
           </View>
         </View>
 
-        {/* Dashboard: left column with 3 cards, right column with 2 cards */}
         <View style={[styles.grid, { paddingHorizontal: 16, flexDirection: 'row', minHeight: 380 }]}> 
           <View style={{ width: '60%', justifyContent: 'space-between' }}>
             {dashboardItems.slice(0, 3).map((item, idx) => (
@@ -416,7 +452,6 @@ const Home = ({ navigation }) => {
                   },
                 ]}
                 onPress={() => {
-                  // pass the first child's section when navigating to Events
                   const section = (childNames && childNames.length && childNames[0].section) ? childNames[0].section : null;
                   if (item.screen === 'event') {
                     navigation.navigate(item.screen, section ? { section } : {});
@@ -470,6 +505,87 @@ const Home = ({ navigation }) => {
           </View>
         </View>
       </ScrollView>
+
+      {/* Custom Contact Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={contactModalVisible}
+        onRequestClose={() => setContactModalVisible(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setContactModalVisible(false)}
+        >
+          <View style={styles.modalContainer}>
+            <TouchableOpacity 
+              activeOpacity={1}
+              style={[
+                styles.modalContent,
+                { backgroundColor: isDark ? '#1a1a1a' : '#fff' }
+              ]}
+            >
+              <Text style={[
+                styles.modalTitle,
+                { color: isDark ? '#e6edf3' : '#333' }
+              ]}>
+                Open with
+              </Text>
+              
+              <View style={styles.optionsContainer}>
+                <TouchableOpacity 
+                  style={styles.optionButton}
+                  onPress={handleCall}
+                >
+                  <View style={[styles.iconCircle, { backgroundColor: '#2196F3' }]}>
+                    <Ionicons name="call" size={28} color="#fff" />
+                  </View>
+                  <Text style={[
+                    styles.optionText,
+                    { color: isDark ? '#e6edf3' : '#333' }
+                  ]}>
+                    Phone
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={styles.optionButton}
+                  onPress={handleMessage}
+                >
+                  <View style={[styles.iconCircle, { backgroundColor: '#4CAF50' }]}>
+                    <Ionicons name="chatbubble" size={28} color="#fff" />
+                  </View>
+                  <Text style={[
+                    styles.optionText,
+                    { color: isDark ? '#e6edf3' : '#333' }
+                  ]}>
+                    Messages
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.buttonContainer}>
+                <TouchableOpacity
+                  style={[
+                    styles.actionButton,
+                    styles.onceButton,
+                    { backgroundColor: isDark ? '#2a2a2a' : '#f0f0f0' }
+                  ]}
+                  onPress={() => setContactModalVisible(false)}
+                >
+                  <Text style={[
+                    styles.buttonText,
+                    { color: isDark ? '#e6edf3' : '#333' }
+                  ]}>
+                    Cancel
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </LinearGradient>
   );
 };
@@ -588,6 +704,69 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'flex-end',
+  },
+  modalContainer: {
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 20,
+    paddingBottom: 30,
+    paddingHorizontal: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 30,
+  },
+  optionsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 30,
+  },
+  optionButton: {
+    alignItems: 'center',
+    width: 100,
+  },
+  iconCircle: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  optionText: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  actionButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  onceButton: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  alwaysButton: {
+    backgroundColor: '#2196F3',
+  },
+  buttonText: {
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

@@ -140,31 +140,48 @@ const Events = ({ navigation, route }) => {
 
       console.log('[Events] Received', data.length, 'events');
 
-      // Transform data for display
-      const transformedEvents = data.map((event, idx) => ({
-        id: event.id ? String(event.id) : String(idx + 1),
-        title: event.title || 'Untitled Event',
-        date: formatDate(event.scheduled_at),
-        rawDate: event.scheduled_at,
-        description: event.description || 'No description provided',
-        location: event.location || '',
-        eventType: event.event_type || 'general',
-        icon: event.icon || 'calendar',
-        color: pickColor(event.id || event.title || idx),
-        section: event.section || null,
-        teacher: event.teacher_name || null,
-      }));
+      // Get current date/time for filtering
+      const now = new Date();
 
-      // Sort by date (most recent first)
+      // Transform data for display
+      const transformedEvents = data
+        .map((event, idx) => ({
+          id: event.id ? String(event.id) : String(idx + 1),
+          title: event.title || 'Untitled Event',
+          date: formatDate(event.scheduled_at),
+          rawDate: event.scheduled_at,
+          description: event.description || 'No description provided',
+          location: event.location || '',
+          eventType: event.event_type || 'general',
+          icon: event.icon || 'calendar',
+          color: pickColor(event.id || event.title || idx),
+          section: event.section || null,
+          teacher: event.teacher_name || null,
+        }))
+        // Filter out past events - only show upcoming or today's events
+        .filter(event => {
+          if (!event.rawDate) return true; // Keep events without dates
+          const eventDate = new Date(event.rawDate);
+          if (isNaN(eventDate.getTime())) return true; // Keep invalid dates
+          
+          // Set to start of day for comparison
+          const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const eventStart = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+          
+          // Only show events that are today or in the future
+          return eventStart >= todayStart;
+        });
+
+      // Sort by date (soonest first)
       transformedEvents.sort((a, b) => {
         if (!a.rawDate) return 1;
         if (!b.rawDate) return -1;
-        return new Date(b.rawDate) - new Date(a.rawDate);
+        return new Date(a.rawDate) - new Date(b.rawDate);
       });
 
       setEvents(transformedEvents);
       setError(null);
-      console.log('[Events] Successfully loaded', transformedEvents.length, 'events');
+      console.log('[Events] Successfully loaded', transformedEvents.length, 'upcoming events');
 
     } catch (err) {
       console.error('[Events] Load failed:', err);
@@ -271,7 +288,7 @@ const Events = ({ navigation, route }) => {
         />
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={[styles.headerTitle, { color: isDark ? "#fff" : "#333" }]}>
-            Events
+            Upcoming Events
           </Text>
           {studentSection && (
             <Text style={[styles.headerSubtitle, { color: isDark ? "#a0aec0" : "#666" }]}>
@@ -318,11 +335,11 @@ const Events = ({ navigation, route }) => {
                 color={isDark ? '#555' : '#ccc'} 
               />
               <Text style={[styles.emptyText, { color: isDark ? '#fff' : '#333' }]}>
-                No events found
+                No upcoming events
               </Text>
               {studentSection && (
                 <Text style={[styles.emptySubtext, { color: isDark ? '#a0aec0' : '#666' }]}>
-                  No events for Section {studentSection}
+                  No upcoming events for Section {studentSection}
                 </Text>
               )}
             </View>

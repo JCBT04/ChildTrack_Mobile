@@ -3,7 +3,7 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
+  SectionList,
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
@@ -15,19 +15,17 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const DEFAULT_RENDER_BACKEND_URL = "https://childtrack-backend.onrender.com";
 const BACKEND_URL = DEFAULT_RENDER_BACKEND_URL.replace(/\/$/, "");
+
 const Notifications = ({ navigation }) => {
   const { darkModeEnabled } = useTheme();
   const isDark = darkModeEnabled;
 
-  // Backend base URL is provided by centralized config
-
-  const [notifications, setNotifications] = useState([]);
+  const [sections, setSections] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [readIds, setReadIds] = useState(new Set());
 
-  // Notification color strategy: single color or deterministic per-notification
-  const USE_SINGLE_COLOR_NOTIF = false; // set true to force one color for all notifications
+  const USE_SINGLE_COLOR_NOTIF = false;
   const SINGLE_COLOR_NOTIF = '#3498db';
   const NOTIF_PALETTE = ['#e74c3c','#27ae60','#3498db','#9b59b6','#f39c12','#2ecc71'];
 
@@ -51,7 +49,6 @@ const Notifications = ({ navigation }) => {
 
   const pickColorForNotif = (key) => {
     if (USE_SINGLE_COLOR_NOTIF) return SINGLE_COLOR_NOTIF;
-    // namespace the key so notifications use a different mapping than events/schedules
     const seededKey = `notif:${String(key || '')}`;
     const seed = Math.abs(hashStringToInt(seededKey));
     const rnd = mulberry32(seed)();
@@ -59,8 +56,18 @@ const Notifications = ({ navigation }) => {
     return NOTIF_PALETTE[idx];
   };
 
-  // Fetch helper (returns mapped notifications)
   const READ_IDS_KEY = 'read_notifications';
+
+  const isSameDay = (d1, d2) => {
+    if (!d1 || !d2) return false;
+    return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate();
+  };
+
+  const isToday = (date) => {
+    if (!date) return false;
+    const today = new Date();
+    return isSameDay(date, today);
+  };
 
   const fetchNotificationsFromAPI = async () => {
     const parentRaw = await AsyncStorage.getItem("parent");
@@ -80,17 +87,16 @@ const Notifications = ({ navigation }) => {
     const res = await fetch(url);
     if (!res.ok) throw new Error('Network response not ok');
     const data = await res.json();
-    // data may be an array or an object; normalize
     const serverItems = Array.isArray(data) ? data : (Array.isArray(data.results) ? data.results : (Array.isArray(data.value) ? data.value : []));
     const TYPE_LABELS = { attendance: 'Attendance', pickup: 'Pickup', event: 'Event', other: 'Other' };
 
-    // map server notifications first
     const mappedServer = (serverItems || []).map((n) => ({
       id: String(n.id),
       type: n.type,
       typeLabel: TYPE_LABELS[n.type] || (n.type ? String(n.type).charAt(0).toUpperCase() + String(n.type).slice(1) : 'Other'),
       message: n.message || (n.extra_data && JSON.stringify(n.extra_data)) || '',
       time: (n.created_at || n.timestamp) ? new Date(n.created_at || n.timestamp).toLocaleString() : '',
+      timestamp: (n.created_at || n.timestamp) ? new Date(n.created_at || n.timestamp) : new Date(),
       icon: (n.type === 'attendance' ? 'people' : n.type === 'pickup' ? 'person-circle-outline' : (n.type === 'event' ? 'calendar' : 'notifications-outline')),
       color: pickColorForNotif(n.id || n.type),
       raw: n,
@@ -98,7 +104,7 @@ const Notifications = ({ navigation }) => {
       source: 'parent',
     }));
 
-    // also fetch attendance public endpoint to generate 'child in classroom' notifications
+    // Fetch attendance records and create notifications for Present, Pick-up, and Drop-off
     let attendanceItems = [];
     try {
       const attendResp = await fetch(`${BACKEND_URL}/api/attendance/public/`);
@@ -106,7 +112,7 @@ const Notifications = ({ navigation }) => {
         let attendData = await attendResp.json();
         attendData = Array.isArray(attendData) ? attendData : (Array.isArray(attendData.results) ? attendData.results : []);
         console.log('[Notifications] attendance total records:', (attendData || []).length);
-        // try to personalize using stored parent student info
+        
         let storedParent = null;
         try { storedParent = parentRaw ? JSON.parse(parentRaw) : null; } catch (e) { storedParent = null; }
         const myStudentName = storedParent?.student_name?.trim().toLowerCase() || null;
@@ -122,33 +128,51 @@ const Notifications = ({ navigation }) => {
         });
         console.log('[Notifications] attendance filtered for student:', { myStudentName, myStudentLrn, matched: (filtered || []).length });
 
-        const isSameDay = (d1, d2) => {
-          if (!d1 || !d2) return false;
-          return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate();
-        };
-
-        // Only keep records for today and with present/in status
+        // Keep records from today and yesterday
         const today = new Date();
-        const todaysMatches = (filtered || []).filter(it => {
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        
+        const recentMatches = (filtered || []).filter(it => {
           const rawDate = it.date || it.timestamp || it.created_at;
           if (!rawDate) return false;
           const recDate = new Date(rawDate);
           if (Number.isNaN(recDate.getTime())) return false;
-          const status = (it.status || '').toString().toLowerCase();
-          return (status === 'present' || status === 'in') && isSameDay(recDate, today);
+          const status = (it.status || '').toString().toLowerCase().trim().replace(/[\s_-]/g, '');
+          // Include Present, Pick-up, Drop-off
+          const isValidStatus = (status === 'present' || status === 'pickup' || status === 'dropoff');
+          const isRecentDate = isSameDay(recDate, today) || isSameDay(recDate, yesterday);
+          return isValidStatus && isRecentDate;
         });
 
-        console.log('[Notifications] attendance todaysMatches count:', (todaysMatches || []).length);
+        console.log('[Notifications] attendance recentMatches count:', (recentMatches || []).length);
 
-        attendanceItems = (todaysMatches || []).map(it => {
+        attendanceItems = (recentMatches || []).map(it => {
+          const status = (it.status || '').toString().toLowerCase().trim().replace(/[\s_-]/g, '');
+          let message = 'Your child is in the classroom';
+          let icon = 'people';
+          let color = '#27ae60'; // green for present
+          
+          if (status === 'pickup') {
+            message = 'Your child has been picked up';
+            icon = 'log-out-outline';
+            color = '#3498db'; // blue for pickup
+          } else if (status === 'dropoff') {
+            message = 'Your child is in the classroom';
+            icon = 'people';
+            color = '#27ae60'; // green (same as present)
+          }
+
+          const itemDate = it.date || it.timestamp || it.created_at;
           return {
             id: `attendance-${it.id}`,
             type: 'attendance',
             typeLabel: 'Attendance',
-            message: 'Your child is already in the classroom',
-            time: it.date || it.timestamp ? new Date(it.date || it.timestamp).toLocaleString() : '',
-            icon: 'people',
-            color: '#27ae60',
+            message: message,
+            time: itemDate ? new Date(itemDate).toLocaleString() : '',
+            timestamp: itemDate ? new Date(itemDate) : new Date(),
+            icon: icon,
+            color: color,
             raw: it,
             read: false,
             source: 'attendance',
@@ -156,13 +180,12 @@ const Notifications = ({ navigation }) => {
         });
       }
     } catch (e) {
-      // ignore attendance fetch failure
+      console.warn('[Notifications] attendance fetch failed', e);
     }
 
-    // also fetch events for the student's section (upcoming)
+    // Fetch events for the student's section (upcoming)
     let eventItems = [];
     try {
-      // reuse storedParent from above if present
       let storedParentForEvents = null;
       try { storedParentForEvents = parentRaw ? JSON.parse(parentRaw) : null; } catch (e) { storedParentForEvents = null; }
       const section = storedParentForEvents?.student_section || storedParentForEvents?.student?.section || null;
@@ -175,46 +198,40 @@ const Notifications = ({ navigation }) => {
         console.log('[Notifications] events total records:', (eventsData || []).length);
         const now = new Date();
         const cutoff = new Date();
-        cutoff.setDate(now.getDate() + 7); // next 7 days
-
-        const isSameDay = (d1, d2) => {
-          if (!d1 || !d2) return false;
-          return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate();
-        };
+        cutoff.setDate(now.getDate() + 7);
 
         const upcoming = (eventsData || []).filter(ev => {
           const raw = ev.scheduled_at || ev.timestamp || ev.date;
           if (!raw) return false;
           const d = new Date(raw);
           if (Number.isNaN(d.getTime())) return false;
-          // include events happening today (any time) or within the next 7 days
           return isSameDay(d, now) || (d >= now && d <= cutoff);
         });
         console.log('[Notifications] upcoming events count:', (upcoming || []).length);
 
-        eventItems = (upcoming || []).map(ev => ({
-          id: `event-${ev.id}`,
-          type: 'event',
-          // Label as 'Event' and keep event_type for subType
-          typeLabel: 'Event',
-          subType: ev.event_type || '',
-          // For attendance-like layout, use event_type as the message
-          message: ev.event_type || ev.title || 'Event',
-          time: ev.scheduled_at ? new Date(ev.scheduled_at).toLocaleString() : (ev.timestamp ? new Date(ev.timestamp).toLocaleString() : ''),
-          // Use calendar icon for events and blue color
-          icon: 'calendar',
-          color: '#3498db',
-          raw: ev,
-          read: false,
-          source: 'event',
-        }));
+        eventItems = (upcoming || []).map(ev => {
+          const eventDate = ev.scheduled_at || ev.timestamp || ev.date;
+          return {
+            id: `event-${ev.id}`,
+            type: 'event',
+            typeLabel: 'Event',
+            subType: ev.event_type || '',
+            message: ev.event_type || ev.title || 'Event',
+            time: eventDate ? new Date(eventDate).toLocaleString() : '',
+            timestamp: eventDate ? new Date(eventDate) : new Date(),
+            icon: 'calendar',
+            color: '#3498db',
+            raw: ev,
+            read: false,
+            source: 'event',
+          };
+        });
       }
     } catch (e) {
-      // ignore event fetch failure
       console.warn('[Notifications] events fetch failed', e);
     }
 
-    // also fetch unregistered guardians (public) to create notifications for pending requests
+    // Fetch unregistered guardians
     let unregisteredItems = [];
     try {
       const guardiansResp = await fetch(`${BACKEND_URL}/api/guardian/public/`);
@@ -223,7 +240,6 @@ const Notifications = ({ navigation }) => {
         guardiansData = Array.isArray(guardiansData) ? guardiansData : (Array.isArray(guardiansData.results) ? guardiansData.results : (Array.isArray(guardiansData.value) ? guardiansData.value : []));
         console.log('[Notifications] guardian public total records:', (guardiansData || []).length);
 
-        // personalize using stored parent student info
         let storedParentForGuardians = null;
         try { storedParentForGuardians = parentRaw ? JSON.parse(parentRaw) : null; } catch (e) { storedParentForGuardians = null; }
         const myStudentName = storedParentForGuardians?.student_name?.trim().toLowerCase() || null;
@@ -232,7 +248,6 @@ const Notifications = ({ navigation }) => {
         const matched = (guardiansData || []).filter(g => {
           if (!g) return false;
           const status = (g.status || '').toString().toLowerCase();
-          // consider 'pending' or 'unregistered' as candidates depending on backend shape
           if (status !== 'pending' && status !== 'unregistered') return false;
           const recName = (g.student_name || '').trim().toLowerCase();
           const recLrn = (g.student_lrn || '').toString();
@@ -242,30 +257,58 @@ const Notifications = ({ navigation }) => {
         });
         console.log('[Notifications] unregistered guardians matched:', (matched || []).length);
 
-        unregisteredItems = (matched || []).map(u => ({
-          id: `unregistered-${u.id}`,
-          type: 'unregistered',
-          typeLabel: 'Unregistered',
-          // message: guardian name + student context when available
-          message: (u.name || u.guardian_name || u.username || 'Unregistered guardian') + (u.student_name ? ` for ${u.student_name}` : ''),
-          time: u.created_at ? new Date(u.created_at).toLocaleString() : (u.timestamp ? new Date(u.timestamp).toLocaleString() : ''),
-          icon: 'close-circle',
-          color: '#e74c3c',
-          raw: u,
-          read: false,
-          source: 'guardian',
-        }));
+        unregisteredItems = (matched || []).map(u => {
+          const guardianDate = u.created_at || u.timestamp;
+          return {
+            id: `unregistered-${u.id}`,
+            type: 'unregistered',
+            typeLabel: 'Unregistered',
+            message: (u.name || u.guardian_name || u.username || 'Unregistered guardian') + (u.student_name ? ` for ${u.student_name}` : ''),
+            time: guardianDate ? new Date(guardianDate).toLocaleString() : '',
+            timestamp: guardianDate ? new Date(guardianDate) : new Date(),
+            icon: 'close-circle',
+            color: '#e74c3c',
+            raw: u,
+            read: false,
+            source: 'guardian',
+          };
+        });
       }
     } catch (e) {
-      // ignore guardian fetch failures
+      console.warn('[Notifications] guardian fetch failed', e);
     }
 
-    // combine and return (include events & unregistered guardian notifications)
     const combined = [...mappedServer, ...attendanceItems, ...eventItems, ...unregisteredItems];
-    // dedupe by id
     const seen = new Map();
     combined.forEach(it => { if (!seen.has(it.id)) seen.set(it.id, it); });
     return Array.from(seen.values());
+  };
+
+  const groupNotificationsByDate = (notifications) => {
+    const today = [];
+    const earlier = [];
+
+    notifications.forEach(notif => {
+      if (isToday(notif.timestamp)) {
+        today.push(notif);
+      } else {
+        earlier.push(notif);
+      }
+    });
+
+    // Sort each group by timestamp (most recent first)
+    today.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    earlier.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    const sections = [];
+    if (today.length > 0) {
+      sections.push({ title: 'Today', data: today });
+    }
+    if (earlier.length > 0) {
+      sections.push({ title: 'Earlier', data: earlier });
+    }
+
+    return sections;
   };
 
   useEffect(() => {
@@ -273,7 +316,6 @@ const Notifications = ({ navigation }) => {
     (async () => {
       try {
         const items = await fetchNotificationsFromAPI();
-        // Prefer server-side read flags when available
         const serverReadIds = items.filter(it => it.read).map(it => String(it.id));
         const storedReadRaw = await AsyncStorage.getItem(READ_IDS_KEY);
         const storedRead = storedReadRaw ? JSON.parse(storedReadRaw) : [];
@@ -281,7 +323,8 @@ const Notifications = ({ navigation }) => {
         const combinedRead = new Set([...serverReadIds, ...fallbackReadIds]);
         if (!mounted) return;
         setReadIds(combinedRead);
-        setNotifications(items);
+        const groupedSections = groupNotificationsByDate(items);
+        setSections(groupedSections);
       } catch (err) {
         console.warn('Failed to load notifications:', err.message || err);
       } finally {
@@ -295,7 +338,8 @@ const Notifications = ({ navigation }) => {
     setRefreshing(true);
     try {
       const items = await fetchNotificationsFromAPI();
-      setNotifications(items);
+      const groupedSections = groupNotificationsByDate(items);
+      setSections(groupedSections);
     } catch (err) {
       console.warn('Refresh failed:', err);
     } finally {
@@ -320,7 +364,6 @@ const Notifications = ({ navigation }) => {
       next.add(sid);
       setReadIds(next);
       await saveReadIds(next);
-      // Also persist to server
       try {
         const token = await AsyncStorage.getItem('token');
         const headers = { 'Content-Type': 'application/json' };
@@ -331,8 +374,12 @@ const Notifications = ({ navigation }) => {
           body: JSON.stringify({ read: true }),
         });
         if (resp.ok) {
-          // update local notifications array to reflect server read
-          setNotifications((prev) => prev.map((it) => (String(it.id) === sid ? { ...it, read: true } : it)));
+          setSections((prevSections) =>
+            prevSections.map(section => ({
+              ...section,
+              data: section.data.map(it => (String(it.id) === sid ? { ...it, read: true } : it))
+            }))
+          );
         }
       } catch (e) {
         console.warn('Failed to persist read to server', e);
@@ -344,44 +391,50 @@ const Notifications = ({ navigation }) => {
 
   const renderItem = ({ item }) => (
     <TouchableOpacity onPress={() => handlePressNotification(item)} activeOpacity={0.8}>
-    <LinearGradient
-      colors={isDark ? ["#1e1e1e", "#121212"] : ["#ffffff", "#f4f6f9"]}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={styles.card}
-    >
-      <Ionicons
-        name={item.icon}
-        size={32}
-        color={item.color}
-        style={styles.icon}
-      />
-      <View style={{ flex: 1 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
-          <View style={[styles.badge, { backgroundColor: item.color }]}>
-            <Text style={styles.badgeText}>{item.typeLabel}</Text>
+      <LinearGradient
+        colors={isDark ? ["#1e1e1e", "#121212"] : ["#ffffff", "#f4f6f9"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.card}
+      >
+        <Ionicons
+          name={item.icon}
+          size={32}
+          color={item.color}
+          style={styles.icon}
+        />
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+            <View style={[styles.badge, { backgroundColor: item.color }]}>
+              <Text style={styles.badgeText}>{item.typeLabel}</Text>
+            </View>
+            {item.type !== 'event' && item.subType ? (
+              <Text style={[styles.subBadgeText, { color: isDark ? '#cbd5e0' : '#666', marginLeft: 8 }]}>{item.subType}</Text>
+            ) : null}
           </View>
-          {item.type !== 'event' && item.subType ? (
-            <Text style={[styles.subBadgeText, { color: isDark ? '#cbd5e0' : '#666', marginLeft: 8 }]}>{item.subType}</Text>
-          ) : null}
-        </View>
 
-        <Text style={[styles.message, { color: isDark ? "#fff" : "#333", fontWeight: readIds.has(String(item.id)) ? '400' : '700' }]}> 
-          {item.message}
-        </Text>
-        <Text style={[styles.time, { color: isDark ? "#bbb" : "#777" }]}>{item.time}</Text>
-      </View>
-          {/* small unread dot */}
-          {!readIds.has(String(item.id)) ? (
-            <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#e74c3c', marginLeft: 8 }} />
-          ) : null}
-        </LinearGradient>
-      </TouchableOpacity>
-    );
+          <Text style={[styles.message, { color: isDark ? "#fff" : "#333", fontWeight: readIds.has(String(item.id)) ? '400' : '700' }]}> 
+            {item.message}
+          </Text>
+          <Text style={[styles.time, { color: isDark ? "#bbb" : "#777" }]}>{item.time}</Text>
+        </View>
+        {!readIds.has(String(item.id)) ? (
+          <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#e74c3c', marginLeft: 8 }} />
+        ) : null}
+      </LinearGradient>
+    </TouchableOpacity>
+  );
+
+  const renderSectionHeader = ({ section: { title } }) => (
+    <View style={[styles.sectionHeader, { backgroundColor: isDark ? '#0b0f19' : '#f5f5f5' }]}>
+      <Text style={[styles.sectionHeaderText, { color: isDark ? '#a0aec0' : '#666' }]}>
+        {title}
+      </Text>
+    </View>
+  );
 
   const handlePressNotification = async (item) => {
     await markAsRead(item.id);
-    // If the notification has extra_data with deep link info, navigate
     const raw = item.raw || {};
     try {
       const extra = raw.extra_data || (raw.extra_data === null ? null : raw.extra_data);
@@ -396,6 +449,19 @@ const Notifications = ({ navigation }) => {
     }
   };
 
+  // Calculate total unread count
+  const getTotalUnreadCount = () => {
+    let total = 0;
+    sections.forEach(section => {
+      section.data.forEach(item => {
+        if (!readIds.has(String(item.id))) {
+          total++;
+        }
+      });
+    });
+    return total;
+  };
+
   return (
     <LinearGradient
       colors={isDark ? ['#0b0f19', '#1a1f2b'] : ['#f5f5f5', '#e0e0e0']}
@@ -403,7 +469,6 @@ const Notifications = ({ navigation }) => {
       end={{ x: 1, y: 1 }}
       style={styles.container}
     >
-      {/* Header */}
       <View style={styles.header}>
         <Ionicons
           name="arrow-back"
@@ -420,27 +485,27 @@ const Notifications = ({ navigation }) => {
         <Text style={[styles.headerTitle, { color: isDark ? "#fff" : "#333" }]}>
           Notifications
         </Text>
-        {Array.from(readIds).length < notifications.length ? (
+        {getTotalUnreadCount() > 0 ? (
           <View style={{ marginLeft: 8, backgroundColor: '#e74c3c', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
-            <Text style={{ color: '#fff', fontWeight: '700' }}>{Math.max(0, notifications.length - Array.from(readIds).length)}</Text>
+            <Text style={{ color: '#fff', fontWeight: '700' }}>{getTotalUnreadCount()}</Text>
           </View>
         ) : null}
       </View>
 
-      {/* List */}
       {loading ? (
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
           <ActivityIndicator size="large" color={isDark ? '#fff' : '#333'} />
         </View>
       ) : (
-        <FlatList
-          data={notifications}
+        <SectionList
+          sections={sections}
           renderItem={renderItem}
+          renderSectionHeader={renderSectionHeader}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 16 }}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 16 }}
           showsVerticalScrollIndicator={false}
           style={{ flex: 1 }}
-          extraData={notifications}
+          stickySectionHeadersEnabled={true}
           keyboardShouldPersistTaps="handled"
           ListEmptyComponent={() => (
             <View style={{ padding: 20, alignItems: 'center' }}>
@@ -479,6 +544,16 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginLeft: 12,
   },
+  sectionHeader: {
+    paddingVertical: 12,
+    paddingTop: 20,
+  },
+  sectionHeaderText: {
+    fontSize: 14,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   card: {
     flexDirection: "row",
     alignItems: "center",
@@ -509,18 +584,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  eventDot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-  },
-  eventTitleColored: {
-    fontSize: 15,
-    marginBottom: 4,
-  },
-  eventTypeUnder: {
+  subBadgeText: {
     fontSize: 12,
-    marginTop: 4,
   },
 });
 
